@@ -15,7 +15,7 @@ st.set_page_config(
     layout="wide",
 )
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 
 def extract_text(uploaded_file) -> str:
