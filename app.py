@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import time
 
 import streamlit as st
 from google import genai
@@ -15,7 +16,7 @@ st.set_page_config(
     layout="wide",
 )
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 
 def extract_text(uploaded_file) -> str:
@@ -40,7 +41,7 @@ def extract_text(uploaded_file) -> str:
 
 
 def analyze_resume(resume_text: str, job_description: str = "") -> dict:
-    """Ask Gemini to evaluate the resume and return structured ATS feedback."""
+    """Ask Gemini to evaluate the resume and return structured ATS feedback with retry logic."""
     api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -113,25 +114,49 @@ RESUME:
 {resume_text[:30000]}
 """
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-        ),
-    )
+    # Retry logic for handling 503 errors
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            st.info(f"🔄 Analyzing with Gemini (Attempt {attempt + 1}/{max_retries})...")
+            
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                ),
+            )
 
-    raw = (response.text or "").strip()
-    if not raw:
-        raise RuntimeError("Gemini returned an empty response.")
+            raw = (response.text or "").strip()
+            if not raw:
+                raise RuntimeError("Gemini returned an empty response.")
 
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Gemini returned invalid JSON. Please try again.") from exc
+            try:
+                result = json.loads(raw)
+                st.success(f"✅ Analysis complete!")
+                return result
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Gemini returned invalid JSON. Please try again.") from exc
 
-    return result
+        except Exception as e:
+            error_msg = str(e)
+            
+            # Check if it's a 503/rate limit error
+            if "503" in error_msg or "UNAVAILABLE" in error_msg or "overloaded" in error_msg.lower():
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # 1, 2, 4 seconds
+                    st.warning(f"⏳ Server busy (503)... Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise RuntimeError(
+                        "Gemini API is currently overloaded. Please try again in a few minutes."
+                    )
+            else:
+                # Other error - don't retry
+                raise
 
 
 def show_results(result: dict) -> None:
